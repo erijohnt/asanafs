@@ -1,169 +1,108 @@
-from fuse import FuseOSError
-import fuse
 import errno
+import io
 
-class AsanaFS(fuse.Operations):
-    def access(self, path, amode):
-        return 0
+import asana_utils as asana
 
-    bmap = None
+import sys
+import stat
+import os
+import fuse
+import pathlib
+import logging
+from fuse import FuseOSError
 
-    def chmod(self, path, mode):
-        raise FuseOSError(errno.EROFS)
 
-    def chown(self, path, uid, gid):
-        raise FuseOSError(errno.EROFS)
+logging.basicConfig(level=logging.DEBUG)
 
-    def create(self, path, mode, fi=None):
-        '''
-        When raw_fi is False (default case), fi is None and create should
-        return a numerical file handle.
 
-        When raw_fi is True the file handle should be set directly by create
-        and return 0.
-        '''
+class AsanaFS(fuse.LoggingMixIn, fuse.Operations):
+    def __init__(self, root):
+        self.root = root
+        self.open_files = {}
 
-        raise FuseOSError(errno.EROFS)
-
-    def destroy(self, path):
-        'Called on filesystem destruction. Path is always /'
-
-        pass
-
-    def flush(self, path, fh):
-        return 0
-
-    def fsync(self, path, datasync, fh):
-        return 0
-
-    def fsyncdir(self, path, datasync, fh):
-        return 0
-
-    def getattr(self, path, fh=None):
-        '''
-        Returns a dictionary with keys identical to the stat C structure of
-        stat(2).
-
-        st_atime, st_mtime and st_ctime should be floats.
-
-        NOTE: There is an incompatibility between Linux and Mac OS X
-        concerning st_nlink of directories. Mac OS X counts all files inside
-        the directory, while Linux counts only the subdirectories.
-        '''
-
-        if path != '/':
-            raise FuseOSError(errno.ENOENT)
-        return dict(st_mode=(fuse.S_IFDIR | 0o755), st_nlink=2)
-
-    def getxattr(self, path, name, position=0):
-        raise FuseOSError(errno.ENOTSUP)
-
-    def init(self, path):
-        '''
-        Called on filesystem initialization. (Path is always /)
-
-        Use it instead of __init__ if you start threads on initialization.
-        '''
-
-        pass
-
-    def ioctl(self, path, cmd, arg, fip, flags, data):
-        raise FuseOSError(errno.ENOTTY)
-
-    def link(self, target, source):
-        'creates a hard link `target -> source` (e.g. ln source target)'
-
-        raise FuseOSError(errno.EROFS)
-
-    def listxattr(self, path):
-        return []
-
-    lock = None
-
-    def mkdir(self, path, mode):
-        raise FuseOSError(errno.EROFS)
-
-    def mknod(self, path, mode, dev):
-        raise FuseOSError(errno.EROFS)
-
-    def open(self, path, flags):
-        '''
-        When raw_fi is False (default case), open should return a numerical
-        file handle.
-
-        When raw_fi is True the signature of open becomes:
-            open(self, path, fi)
-
-        and the file handle should be set directly.
-        '''
-
-        return 0
-
-    def opendir(self, path):
-        'Returns a numerical file handle.'
-
-        return 0
-
-    def read(self, path, size, offset, fh):
-        'Returns a string containing the data requested.'
-
-        raise FuseOSError(errno.EIO)
+        token = os.getenv("ASANA_API_KEY")
+        assert token, "Missing ASANA_API_KEY with personal access token"
+        self.asana = asana.Asana(token)
 
     def readdir(self, path, fh):
-        '''
-        Can return either a list of names, or a list of (name, attrs, offset)
-        tuples. attrs is a dict as in getattr.
-        '''
+        dirents = [".", ".."]
+        path = pathlib.Path(path)
+        breakpoint()
+        if path == pathlib.Path("/"):
+            # list workspaces
+            dirents.extend(self.asana.workspaces.keys())
+        elif len(path.parts) == 2:
+            # list projects within a workspace
+            _, workspace = path.parts
+            dirents.extend(self.asana.projects_by_workspace[workspace].keys())
+        elif len(path.parts) == 3:
+            # list tasks within a project
+            _, workspace, project = path.parts
+            dirents.extend(list(self.asana.project_tasks(workspace, project).keys()))
+        elif len(path.parts) == 4:
+            # list task
+            _, workspace, project, task = path.parts
+            project_tasks = self.asana.project_tasks(workspace, project)
+            dirents = [t for t in project_tasks if t == task]
+        else:
+            raise FuseOSError(errno.ENOENT)
 
-        return ['.', '..']
+        for r in dirents:
+            yield r
 
-    def readlink(self, path):
-        raise FuseOSError(errno.ENOENT)
+    def getattr(self, path, fh=None):
+        # https://linux.die.net/man/2/stat
+        path = pathlib.Path(path)
+        if len(path.parts) <= 3:
+            # workspaces and projects are directories
+            st_mode = 0o755 | stat.S_IFDIR
+            st_size = 0
+            st_mtime = 0
+        else:
+            # tasks are files
+            st_mode = 0o755 | stat.S_IFREG
+            _, workspace, project, task = path.parts
+            task = self.asana.path_to_task(workspace, project, task)
+            st_size = task.st_size
+            st_mtime = task.st_mtime
+        return dict(
+            st_atime=0,
+            st_ctime=0,
+            st_gid=0,
+            st_mode=st_mode,
+            st_mtime=st_mtime,
+            st_nlink=0,
+            st_size=st_size,
+            st_uid=0,
+        )
+
+    def read(self, path, length, offset, fh):
+        print(f"params: {path=} {length=} {offset=}")
+        path = pathlib.Path(path)
+        _, workspace, project, task = path.parts
+        task = self.asana.path_to_task(workspace, project, task).dump()
+        task_io = io.BytesIO(initial_bytes=task.encode("utf-8"))
+        task_io.seek(offset)
+        return task_io.read(length)
+
+    def flush(self, path, fh):
+        pass
+
+    def fsync(self, path, fdatasync, fh):
+        pass
 
     def release(self, path, fh):
-        return 0
+        pass
 
-    def releasedir(self, path, fh):
-        return 0
+    def access(self, path, mode):
+        pass
 
-    def removexattr(self, path, name):
-        raise FuseOSError(errno.ENOTSUP)
 
-    def rename(self, old, new):
-        raise FuseOSError(errno.EROFS)
+def main(mountpoint, root):
+    fuse.FUSE(
+        AsanaFS("/"), mountpoint, nothreads=False, foreground=True, allow_other=False
+    )
 
-    def rmdir(self, path):
-        raise FuseOSError(errno.EROFS)
 
-    def setxattr(self, path, name, value, options, position=0):
-        raise FuseOSError(errno.ENOTSUP)
-
-    def statfs(self, path):
-        '''
-        Returns a dictionary with keys identical to the statvfs C structure of
-        statvfs(3).
-
-        On Mac OS X f_bsize and f_frsize must be a power of 2
-        (minimum 512).
-        '''
-
-        return {}
-
-    def symlink(self, target, source):
-        'creates a symlink `target -> source` (e.g. ln -s source target)'
-
-        raise FuseOSError(errno.EROFS)
-
-    def truncate(self, path, length, fh=None):
-        raise FuseOSError(errno.EROFS)
-
-    def unlink(self, path):
-        raise FuseOSError(errno.EROFS)
-
-    def utimens(self, path, times=None):
-        'Times is a (atime, mtime) tuple. If None use current time.'
-
-        return 0
-
-    def write(self, path, data, offset, fh):
-        raise FuseOSError(errno.EROFS)
+if __name__ == "__main__":
+    main(sys.argv[2], sys.argv[1])
