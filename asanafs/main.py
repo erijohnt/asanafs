@@ -27,7 +27,6 @@ class AsanaFS(fuse.LoggingMixIn, fuse.Operations):
     def readdir(self, path, fh):
         dirents = [".", ".."]
         path = pathlib.Path(path)
-        breakpoint()
         if path == pathlib.Path("/"):
             # list workspaces
             dirents.extend(self.asana.workspaces.keys())
@@ -77,7 +76,6 @@ class AsanaFS(fuse.LoggingMixIn, fuse.Operations):
         )
 
     def read(self, path, length, offset, fh):
-        print(f"params: {path=} {length=} {offset=}")
         path = pathlib.Path(path)
         _, workspace, project, task = path.parts
         task = self.asana.path_to_task(workspace, project, task).dump()
