@@ -2,20 +2,21 @@ import errno
 import io
 
 import asana_utils as asana
+import trio
 
 import sys
 import stat
 import os
-import fuse
 import pathlib
+import pyfuse3
 import logging
-from fuse import FuseOSError
 
 
 logging.basicConfig(level=logging.DEBUG)
+log = logging.getLogger(__name__)
 
 
-class AsanaFS(fuse.LoggingMixIn, fuse.Operations):
+class AsanaFS(pyfuse3.Operations):
     def __init__(self, root):
         self.root = root
         self.open_files = {}
@@ -24,7 +25,7 @@ class AsanaFS(fuse.LoggingMixIn, fuse.Operations):
         assert token, "Missing ASANA_API_KEY with personal access token"
         self.asana = asana.Asana(token)
 
-    def readdir(self, path, fh):
+    async def readdir(self, path, fh):
         dirents = [".", ".."]
         path = pathlib.Path(path)
         if path == pathlib.Path("/"):
@@ -44,12 +45,12 @@ class AsanaFS(fuse.LoggingMixIn, fuse.Operations):
             project_tasks = self.asana.project_tasks(workspace, project)
             dirents = [t for t in project_tasks if t == task]
         else:
-            raise FuseOSError(errno.ENOENT)
+            raise pyfuse3.FUSEError(errno.ENOENT)
 
         for r in dirents:
             yield r
 
-    def getattr(self, path, fh=None):
+    async def getattr(self, path, fh=None):
         # https://linux.die.net/man/2/stat
         path = pathlib.Path(path)
         if len(path.parts) <= 3:
@@ -75,7 +76,7 @@ class AsanaFS(fuse.LoggingMixIn, fuse.Operations):
             st_uid=0,
         )
 
-    def read(self, path, length, offset, fh):
+    async def read(self, path, length, offset, fh):
         path = pathlib.Path(path)
         _, workspace, project, task = path.parts
         task = self.asana.path_to_task(workspace, project, task).dump()
@@ -83,24 +84,39 @@ class AsanaFS(fuse.LoggingMixIn, fuse.Operations):
         task_io.seek(offset)
         return task_io.read(length)
 
-    def flush(self, path, fh):
+    async def flush(self, path, fh):
         pass
 
-    def fsync(self, path, fdatasync, fh):
+    async def fsync(self, path, fdatasync, fh):
         pass
 
-    def release(self, path, fh):
+    async def release(self, path, fh):
         pass
 
-    def access(self, path, mode):
+    async def access(self, path, mode):
         pass
 
 
-def main(mountpoint, root):
-    fuse.FUSE(
-        AsanaFS("/"), mountpoint, nothreads=False, foreground=True, allow_other=False
-    )
+def main(source: str, mountpoint: str, debug: bool = True):
+    operations = AsanaFS(source)
+
+    log.debug("Mounting...")
+    fuse_options = set(pyfuse3.default_options)
+    fuse_options.add("fsname=asanafs")
+    if debug:
+        fuse_options.add("debug")
+    pyfuse3.init(operations, mountpoint, fuse_options)
+
+    try:
+        log.debug("Entering main loop..")
+        trio.run(pyfuse3.main)
+    except Exception as e:
+        pyfuse3.close(unmount=False)
+        raise e
+
+    log.debug("Unmounting..")
+    pyfuse3.close()
 
 
 if __name__ == "__main__":
-    main(sys.argv[2], sys.argv[1])
+    main(sys.argv[1], sys.argv[2])
