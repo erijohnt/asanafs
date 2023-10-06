@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 class AsanaFS(pyfuse3.Operations):
     def __init__(self, root):
+        super(AsanaFS, self).__init__()
         self.root = root
         self.open_files = {}
 
@@ -50,10 +51,11 @@ class AsanaFS(pyfuse3.Operations):
         for r in dirents:
             yield r
 
-    async def getattr(self, path, fh=None):
+    async def getattr(self, inode, ctx=None):
         # https://linux.die.net/man/2/stat
-        path = pathlib.Path(path)
-        if len(path.parts) <= 3:
+        print(f"noooooosdfaslkdfasdfa {inode=}")
+        return pyfuse3.EntryAttributes()
+        if inode == 1:
             # workspaces and projects are directories
             st_mode = 0o755 | stat.S_IFDIR
             st_size = 0
@@ -61,7 +63,7 @@ class AsanaFS(pyfuse3.Operations):
         else:
             # tasks are files
             st_mode = 0o755 | stat.S_IFREG
-            _, workspace, project, task = path.parts
+            _, workspace, project, task = inode.parts
             task = self.asana.path_to_task(workspace, project, task)
             st_size = task.st_size
             st_mtime = task.st_mtime
@@ -75,6 +77,9 @@ class AsanaFS(pyfuse3.Operations):
             st_size=st_size,
             st_uid=0,
         )
+
+    async def statfs(self, ctx):
+        return pyfuse3.StatvfsData()
 
     async def read(self, path, length, offset, fh):
         path = pathlib.Path(path)
@@ -105,13 +110,12 @@ def main(source: str, mountpoint: str, debug: bool = True):
     fuse_options.add("fsname=asanafs")
     if debug:
         fuse_options.add("debug")
-    pyfuse3.init(operations, mountpoint, fuse_options)
-
     try:
+        pyfuse3.init(operations, mountpoint, fuse_options)
         log.debug("Entering main loop..")
         trio.run(pyfuse3.main)
     except Exception as e:
-        pyfuse3.close(unmount=False)
+        pyfuse3.close(unmount=True)
         raise e
 
     log.debug("Unmounting..")

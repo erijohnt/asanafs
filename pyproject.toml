@@ -15,7 +15,14 @@ pyfuse3 = "^3.2.3"
 
 [tool.poetry.group.dev.dependencies]
 black = "^23.3.0"
+pytest = "^7.4.0"
+pytest-trio = "^0.8.0"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+trio_mode = true
+pythonpath = [".", "asanafs"]
+log_level = "DEBUG"
